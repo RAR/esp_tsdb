@@ -685,6 +685,40 @@ esp_err_t tsdb_run_benchmark(uint32_t num_records, uint8_t num_params,
 tsdb_t *tsdb_open(const tsdb_config_t *config);
 
 /**
+ * @brief Time span and size of a database, read without opening it.
+ */
+typedef struct {
+    uint32_t oldest_timestamp;  // Timestamp of the oldest retained record
+    uint32_t newest_timestamp;  // Timestamp of the newest record
+    uint32_t total_records;     // Records written (capped at max_records once wrapped)
+    uint32_t max_records;       // Ring capacity, 0 = unlimited
+    uint8_t  num_params;        // Columns per record
+} tsdb_span_t;
+
+/**
+ * @brief Read a database's time span without opening it.
+ *
+ * Reads the 512-byte header directly, plus the sidecar if it holds a later
+ * state, and returns the span. Does NOT allocate a buffer pool, validate the
+ * index, or take a lock — so it costs a couple of small reads rather than the
+ * full open path.
+ *
+ * Intended for callers managing a SET of databases (e.g. time-partitioned
+ * rolling files) that need to decide which files a query range touches. Opening
+ * every file just to read two timestamps makes that decision cost more than the
+ * query.
+ *
+ * The file is not modified and no handle is retained.
+ *
+ * @param filepath Path to the database file.
+ * @param out      Receives the span on success.
+ * @return ESP_OK, ESP_ERR_INVALID_ARG on NULL args, ESP_ERR_NOT_FOUND if the
+ *         file cannot be opened, ESP_ERR_INVALID_CRC if the header is not a
+ *         valid tsdb header.
+ */
+esp_err_t tsdb_peek_span(const char *filepath, tsdb_span_t *out);
+
+/**
  * @brief Close a handle, flush buffers, free resources.
  *
  * Safe to call with NULL (no-op).

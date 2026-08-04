@@ -243,6 +243,46 @@ void tsdb_sidecar_remove(const char *filepath) {
     }
 }
 
+esp_err_t tsdb_peek_span(const char *filepath, tsdb_span_t *out) {
+    if (filepath == NULL || out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    FILE *f = fopen(filepath, "rb");
+    if (f == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    tsdb_header_t header;
+    size_t items_read = fread(&header, sizeof(header), 1, f);
+    fclose(f);
+
+    if (items_read != 1 || header.magic != TSDB_MAGIC ||
+        !tsdb_header_is_sane(&header)) {
+        return ESP_ERR_INVALID_CRC;
+    }
+
+    // The in-file header lags between syncs — the hot write path persists to
+    // the sidecar. Same precedence rule as tsdb_open: adopt the sidecar only
+    // when it is valid, matches this file's geometry, and is not behind.
+    tsdb_header_t sidecar_header;
+    if (tsdb_sidecar_load(filepath, &sidecar_header, NULL) == ESP_OK &&
+        sidecar_header.magic == TSDB_MAGIC &&
+        tsdb_header_is_sane(&sidecar_header) &&
+        sidecar_header.num_params == header.num_params &&
+        sidecar_header.records_per_block == header.records_per_block &&
+        sidecar_header.index_offset == header.index_offset &&
+        sidecar_header.total_records >= header.total_records) {
+        header = sidecar_header;
+    }
+
+    out->oldest_timestamp = header.oldest_timestamp;
+    out->newest_timestamp = header.newest_timestamp;
+    out->total_records = header.total_records;
+    out->max_records = header.max_records;
+    out->num_params = header.num_params;
+    return ESP_OK;
+}
+
 /**
  * @brief Calculate block file offset
  */

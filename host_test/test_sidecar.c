@@ -86,6 +86,40 @@ int main(void) {
     if (n != 80) fails++;
     tsdb_close_h(db);
 
+    // --- 4. tsdb_peek_span reads the span without opening -----------------
+    // State here: case 3 corrupted the sidecar, so its 3000-series writes were
+    // correctly discarded and the file still ends where case 2 left it — 80
+    // records, newest ts 2029. peek_span must agree with what a real open sees.
+    tsdb_span_t span;
+    esp_err_t sr = tsdb_peek_span(PATH, &span);
+    int ok = (sr == ESP_OK && span.total_records == 80 &&
+              span.newest_timestamp == 2029 && span.num_params == NPARAM);
+    printf("4. peek_span clean    : rc=%d records=%lu newest=%lu (expect 80/2029) %s\n",
+           (int) sr, (unsigned long) span.total_records,
+           (unsigned long) span.newest_timestamp, ok ? "PASS" : "FAIL");
+    if (!ok) fails++;
+
+    // --- 5. peek_span must reflect the SIDECAR, not the stale in-file copy --
+    // Write without closing, so the in-file header still says 80 while the
+    // sidecar knows the newer records. This is the case the rolling-file boot
+    // scan depends on: a device that lost power mid-file must still report the
+    // span it actually has, or the scan will mis-select files for a query.
+    db = open_db();
+    for (int i = 0; i < 5; i++) tsdb_write_h(db, 4000 + i, v);
+    sr = tsdb_peek_span(PATH, &span);
+    ok = (sr == ESP_OK && span.newest_timestamp == 4004);
+    printf("5. peek_span vs stale : rc=%d newest=%lu (expect 4004) %s\n",
+           (int) sr, (unsigned long) span.newest_timestamp, ok ? "PASS" : "FAIL");
+    if (!ok) fails++;
+    tsdb_close_h(db);
+
+    // --- 6. peek_span on a missing file ------------------------------------
+    sr = tsdb_peek_span("/tmp/tsdb_peek_no_such_file.tsdb", &span);
+    ok = (sr == ESP_ERR_NOT_FOUND);
+    printf("6. peek_span missing  : rc=%d (expect NOT_FOUND) %s\n",
+           (int) sr, ok ? "PASS" : "FAIL");
+    if (!ok) fails++;
+
     cleanup();
     printf("%s\n", fails == 0 ? "ALL PASS" : "FAILURES");
     return fails != 0;
